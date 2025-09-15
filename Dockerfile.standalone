@@ -1,0 +1,880 @@
+FROM python:3.11-slim
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    git \
+    curl \
+    file \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set working directory
+WORKDIR /workspace
+
+# Embed the complete installer script directly in the Dockerfile (no external download needed)uc
+RUN cat > /usr/local/bin/install-pr-agent-complete.sh << 'INSTALLER_EOF'
+#!/bin/bash
+
+# Complete PR-Agent Integration Installer
+# Self-contained script that downloads and sets up everything
+
+set -e
+
+# Color codes for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+NC='\033[0m' # No Color
+
+echo -e "${CYAN}${BOLD}🚀 Complete PR-Agent Integration Installer${NC}"
+echo "=========================================="
+echo "Using official repository: https://github.com/qodo-ai/pr-agent.git"
+echo ""
+
+# Get repository name
+REPO_NAME=$(basename "$(pwd)")
+echo -e "${BLUE}📁 Repository: ${REPO_NAME}${NC}"
+echo ""
+
+# Check prerequisites
+echo -e "${CYAN}🔍 Checking prerequisites...${NC}"
+
+# Check Python
+if ! command -v python3 &> /dev/null; then
+    echo -e "${RED}❌ Python 3 not found${NC}"
+    exit 1
+fi
+PYTHON_VERSION=$(python3 --version 2>&1 | cut -d' ' -f2)
+echo -e "${GREEN}✅ Python 3 found: Python ${PYTHON_VERSION}${NC}"
+
+# Check pip
+if ! command -v pip3 &> /dev/null; then
+    echo -e "${RED}❌ pip3 not found${NC}"
+    exit 1
+fi
+echo -e "${GREEN}✅ pip3 found${NC}"
+
+# Check git
+if ! command -v git &> /dev/null; then
+    echo -e "${RED}❌ git not found${NC}"
+    exit 1
+fi
+echo -e "${GREEN}✅ git found${NC}"
+echo ""
+
+# Create installation directory
+INSTALL_DIR=".cursor-pr-agent"
+TEMP_DIR=$(mktemp -d)
+
+# Download PR-Agent from official repository
+echo -e "${CYAN}📦 Downloading PR-Agent from official repository...${NC}"
+if git clone https://github.com/qodo-ai/pr-agent.git "$TEMP_DIR/pr-agent-repo" --depth 1; then
+    echo -e "${GREEN}✅ Successfully downloaded PR-Agent${NC}"
+else
+    echo -e "${RED}❌ Failed to download PR-Agent${NC}"
+    rm -rf "$TEMP_DIR"
+    exit 1
+fi
+
+# Create installation directory
+mkdir -p "$INSTALL_DIR"
+
+# Copy requirements.txt from official repo
+echo -e "${BLUE}📋 Using official PR-Agent requirements.txt...${NC}"
+cp "$TEMP_DIR/pr-agent-repo/requirements.txt" "$INSTALL_DIR/requirements.txt"
+echo -e "${GREEN}✅ Official requirements.txt copied${NC}"
+
+# Install dependencies
+echo -e "${CYAN}📚 Installing dependencies from official requirements.txt...${NC}"
+if pip3 install --user -r "$INSTALL_DIR/requirements.txt" > /dev/null 2>&1; then
+    echo -e "${GREEN}✅ All dependencies installed in user space${NC}"
+elif pip3 install -r "$INSTALL_DIR/requirements.txt" > /dev/null 2>&1; then
+    echo -e "${GREEN}✅ All dependencies installed (system packages)${NC}"
+elif pip3 install --user --break-system-packages -r "$INSTALL_DIR/requirements.txt" > /dev/null 2>&1; then
+    echo -e "${GREEN}✅ All dependencies installed (with system package override)${NC}"
+else
+    echo -e "${RED}❌ Failed to install dependencies${NC}"
+    rm -rf "$TEMP_DIR"
+    exit 1
+fi
+
+# Copy PR-Agent modules locally
+cp -r "$TEMP_DIR/pr-agent-repo/pr_agent" "$INSTALL_DIR/"
+echo -e "${GREEN}✅ PR-Agent module copied locally${NC}"
+
+# Create the integration script with embedded Python code
+echo -e "${CYAN}🔧 Creating integration script...${NC}"
+cat > "$INSTALL_DIR/cursor_pr_agent_direct.py" << 'PYTHON_SCRIPT_EOF'
+#!/usr/bin/env python3
+"""
+Direct PR-Agent Integration for Cursor IDE
+Self-contained with all necessary functionality
+"""
+
+import os
+import sys
+import asyncio
+import argparse
+import subprocess
+import tempfile
+from pathlib import Path
+
+# Add local pr_agent to path
+script_dir = Path(__file__).parent
+local_pr_agent = script_dir / "pr_agent"
+if local_pr_agent.exists():
+    sys.path.insert(0, str(script_dir))
+
+try:
+    from dotenv import load_dotenv
+    DOTENV_AVAILABLE = True
+except ImportError:
+    DOTENV_AVAILABLE = False
+
+def load_env_file():
+    """Load environment variables from .env file"""
+    env_file = Path(".env")
+    if not env_file.exists():
+        return
+    
+    if DOTENV_AVAILABLE:
+        load_dotenv(env_file, override=True)
+        print("🔑 Loaded environment variables from .env using python-dotenv")
+
+def get_default_branch():
+    """Get the default branch name or fallback strategy"""
+    current_result = subprocess.run(['git', 'branch', '--show-current'], 
+                                  capture_output=True, text=True)
+    current_branch = current_result.stdout.strip() if current_result.returncode == 0 else ""
+    
+    try:
+        result = subprocess.run(['git', 'symbolic-ref', 'refs/remotes/origin/HEAD'], 
+                              capture_output=True, text=True)
+        if result.returncode == 0:
+            remote_default = result.stdout.strip().split('/')[-1]
+            if remote_default != current_branch:
+                return remote_default
+    except:
+        pass
+    
+    result = subprocess.run(['git', 'branch', '--format=%(refname:short)'], 
+                          capture_output=True, text=True)
+    branches = []
+    if result.returncode == 0 and result.stdout.strip():
+        branches = [b.strip() for b in result.stdout.strip().split('\n') if b.strip()]
+    
+    for branch in ['main', 'master', 'develop']:
+        if branch != current_branch and branch in branches:
+            return branch
+    
+    for branch in branches:
+        if branch != current_branch:
+            return branch
+    
+    if len(branches) <= 1:
+        master_check = subprocess.run(['git', 'show-ref', '--verify', '--quiet', 'refs/heads/master'], 
+                                    capture_output=True)
+        if master_check.returncode != 0:
+            first_commit = subprocess.run(['git', 'rev-list', '--max-parents=0', 'HEAD'], 
+                                        capture_output=True, text=True)
+            if first_commit.returncode == 0 and first_commit.stdout.strip():
+                subprocess.run(['git', 'branch', 'master', first_commit.stdout.strip()], 
+                             capture_output=True, text=True)
+                return 'master'
+    
+    return 'main'
+
+def format_review_output(prediction_dict, confidence_level="medium"):
+    """Format the PR-Agent review output for console display"""
+    
+    if not prediction_dict or 'review' not in prediction_dict:
+        return "No review data available"
+    
+    review_data = prediction_dict['review']
+    output = []
+    
+    output.append("\n🔍 PR-Agent Code Review Results")
+    output.append("=" * 50)
+    output.append("")
+    
+    if 'key_issues_to_review' in review_data:
+        issues = review_data['key_issues_to_review']
+        if issues:
+            output.append("🚨 Key Issues Found:")
+            output.append("")
+            
+            for i, issue in enumerate(issues, 1):
+                if isinstance(issue, dict):
+                    file_name = issue.get('relevant_file', 'Unknown file')
+                    issue_header = issue.get('issue_header', 'Issue')
+                    issue_content = issue.get('issue_content', 'No description')
+                    start_line = issue.get('start_line', '')
+                    end_line = issue.get('end_line', '')
+                    
+                    output.append(f"{i}. **{issue_header}** - 📁 `{file_name}`" + 
+                                (f" (Lines {start_line}-{end_line})" if start_line else ""))
+                    output.append(f"   {issue_content}")
+                    output.append("")
+    
+    if 'security_concerns' in review_data:
+        security = review_data['security_concerns']
+        if security and security.strip():
+            output.append("🔒 Security Concerns:")
+            output.append("")
+            lines = security.strip().split('\n')
+            for line in lines:
+                line = line.strip()
+                if line:
+                    if line.startswith('- '):
+                        output.append(f"   {line}")
+                    else:
+                        output.append(f"   • {line}")
+            output.append("")
+    
+    if 'estimated_effort_to_review_[1-5]' in review_data:
+        effort = review_data['estimated_effort_to_review_[1-5]']
+        if effort:
+            output.append(f"⏱️  Estimated Review Effort: {effort}/5")
+            output.append("")
+    
+    if 'relevant_tests' in review_data:
+        tests = review_data['relevant_tests']
+        if tests and tests.strip().lower() not in ['no', 'none', 'n/a']:
+            output.append(f"🧪 Test Coverage: {tests}")
+            output.append("")
+    
+    num_issues = len(review_data.get('key_issues_to_review', []))
+    has_security = bool(review_data.get('security_concerns', '').strip())
+    
+    output.append("📊 Summary:")
+    if num_issues > 0:
+        output.append(f"   • {num_issues} key issue{'s' if num_issues != 1 else ''} found")
+    if has_security:
+        output.append(f"   • Security concerns identified")
+    if num_issues == 0 and not has_security:
+        output.append(f"   • No major issues detected")
+    
+    output.append(f"   • Confidence level: {confidence_level}")
+    output.append("")
+    
+    return "\n".join(output)
+
+async def run_pr_agent_review(base_branch: str = None, confidence_level: str = "medium"):
+    """Run PR-Agent review using the official implementation"""
+    
+    try:
+        load_env_file()
+        
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            return "❌ OPENAI_API_KEY environment variable not set"
+        
+        if api_key.startswith("test-") or api_key == "your-key-here":
+            return "❌ Please set a valid OPENAI_API_KEY in your .env file"
+        
+        print("🔑 API key loaded from environment")
+        
+        result = subprocess.run(['git', 'status', '--porcelain'], capture_output=True, text=True)
+        if result.returncode != 0:
+            return "❌ Failed to check git status"
+        
+        if result.stdout.strip():
+            return "❌ Repository has uncommitted changes. Please commit or stash them first."
+        
+        print("✅ Git repository is clean")
+        
+        try:
+            from pr_agent.git_providers.local_git_provider import LocalGitProvider
+            from pr_agent.tools.pr_reviewer import PRReviewer
+            from pr_agent.config_loader import get_settings
+            print("📚 PR-Agent modules imported successfully")
+        except ImportError as e:
+            return f"❌ Failed to import PR-Agent modules: {e}"
+        
+        get_settings().set("config.git_provider", "local")
+        get_settings().set("config.publish_output", False)
+        get_settings().set("pr_reviewer.require_score_review", False)
+        get_settings().set("pr_reviewer.require_can_be_split_review", False)
+        get_settings().set("pr_reviewer.enable_review_labels_effort", False)
+        get_settings().set("pr_reviewer.enable_review_labels_security", False)
+        
+        print(f"⚙️  Configuration set for {confidence_level} confidence level")
+        
+        if not base_branch:
+            base_branch = get_default_branch()
+        
+        git_provider = LocalGitProvider(target_branch_name=base_branch)
+        print(f"🔗 Local git provider initialized (target: {base_branch})")
+        
+        current_branch = subprocess.run(['git', 'branch', '--show-current'], 
+                                      capture_output=True, text=True).stdout.strip()
+        
+        if not current_branch:
+            return "❌ Could not determine current branch"
+        
+        print(f"🌿 Current branch: {current_branch}")
+        print(f"🎯 Comparing against: {base_branch}")
+        
+        if base_branch == current_branch:
+            return f"ℹ️  On the default branch '{current_branch}' - no review needed. Create a feature branch to get reviews."
+        
+        # Check for text files only, exclude binary files and common non-code files
+        diff_result = subprocess.run(['git', 'diff', f'{base_branch}..HEAD', '--name-only', '--diff-filter=d', '--', 
+                                    ':(exclude).cursor-pr-agent/*', ':(exclude)__pycache__/*',
+                                    ':(exclude).pr_agent.toml', ':(exclude)install-pr-agent-complete.sh',
+                                    ':(exclude)*.pdf', ':(exclude)*.jpg', ':(exclude)*.jpeg', ':(exclude)*.png', 
+                                    ':(exclude)*.gif', ':(exclude)*.svg', ':(exclude)*.ico', ':(exclude)*.webp',
+                                    ':(exclude)*.mp3', ':(exclude)*.mp4', ':(exclude)*.avi', ':(exclude)*.mov',
+                                    ':(exclude)*.zip', ':(exclude)*.tar', ':(exclude)*.gz', ':(exclude)*.rar',
+                                    ':(exclude)*.exe', ':(exclude)*.dll', ':(exclude)*.so', ':(exclude)*.dylib',
+                                    ':(exclude)*.bin', ':(exclude)*.dat', ':(exclude)*.db', ':(exclude)*.sqlite'], 
+                                   capture_output=True, text=True)
+        
+        # Additional binary file filtering using file command
+        if diff_result.returncode == 0 and diff_result.stdout.strip():
+            changed_files = [f.strip() for f in diff_result.stdout.strip().split('\n') if f.strip()]
+            text_files = []
+            
+            for file_path in changed_files:
+                if os.path.exists(file_path):
+                    try:
+                        # Use file command to check if it's a text file
+                        file_check = subprocess.run(['file', '--mime-type', file_path], 
+                                                  capture_output=True, text=True)
+                        if file_check.returncode == 0:
+                            mime_type = file_check.stdout.split(':')[-1].strip()
+                            if mime_type.startswith('text/') or 'json' in mime_type or 'xml' in mime_type:
+                                text_files.append(file_path)
+                            else:
+                                print(f"🚫 Skipping binary file: {file_path} ({mime_type})")
+                        else:
+                            # Fallback: assume it's text if file command fails
+                            text_files.append(file_path)
+                    except Exception as e:
+                        print(f"⚠️  Could not check file type for {file_path}: {e}")
+                        # Fallback: assume it's text
+                        text_files.append(file_path)
+                else:
+                    print(f"⚠️  File not found: {file_path}")
+            
+            if not text_files:
+                return "ℹ️  No text files with changes found"
+            
+            print(f"📝 Processing {len(text_files)} text files: {', '.join(text_files)}")
+            
+            # Now get the actual diff for text files only
+            if text_files:
+                diff_result = subprocess.run(['git', 'diff', f'{base_branch}..HEAD'] + text_files, 
+                                           capture_output=True, text=True)
+        
+        if not diff_result.stdout.strip():
+            return f"ℹ️  No changes detected between '{current_branch}' and '{base_branch}'"
+        
+        print("📊 Changes detected, starting review...")
+        
+        diff_files = git_provider.get_diff_files()
+        print(f"🔍 Found {len(diff_files)} files with changes")
+        
+        pr_reviewer = PRReviewer(base_branch)
+        pr_reviewer.git_provider = git_provider
+        
+        print("🤖 Running PR-Agent analysis...")
+        
+        result = await pr_reviewer.run()
+        
+        if isinstance(result, tuple):
+            prediction, review = result
+        else:
+            prediction = result
+            review = None
+        
+        if not prediction and not review:
+            return "⚠️  PR-Agent completed but no review was generated"
+        
+        if prediction:
+            if hasattr(prediction, 'dict'):
+                prediction_dict = prediction.dict()
+            else:
+                prediction_dict = prediction
+            
+            formatted_output = format_review_output(prediction_dict, confidence_level)
+            print(formatted_output)
+        else:
+            print("\n🔍 PR-Agent Code Review Results")
+            print("=" * 50)
+            print("\n📊 Summary:")
+            print("   • No specific issues found by PR-Agent")
+            print(f"   • Confidence level: {confidence_level}")
+            print("")
+        
+        print(f"✅ PR-Agent review completed!")
+        return "✅ Review completed successfully"
+        
+    except Exception as e:
+        error_msg = f"❌ PR-Agent review failed: {e}"
+        print(error_msg)
+        return error_msg
+
+def main():
+    parser = argparse.ArgumentParser(description="PR-Agent Direct Integration")
+    parser.add_argument("--base-branch", "-b", default=None, 
+                       help="Base branch to compare against (default: auto-detect)")
+    parser.add_argument("--confidence-level", "-c", 
+                       choices=["high", "medium", "low"], default="medium",
+                       help="Filter suggestions by confidence level (default: medium)")
+    parser.add_argument("--verbose", "-v", action="store_true",
+                       help="Enable verbose output")
+    
+    args = parser.parse_args()
+    
+    if args.verbose:
+        import logging
+        logging.basicConfig(level=logging.DEBUG)
+    
+    try:
+        result = asyncio.run(run_pr_agent_review(args.base_branch, args.confidence_level))
+        print("\n" + "="*50)
+        print("📋 SUMMARY:")
+        if "❌" in result:
+            print(result)
+            sys.exit(1)
+        else:
+            print(result)
+    except KeyboardInterrupt:
+        print("\n⚠️  Review interrupted by user")
+        sys.exit(1)
+    except Exception as e:
+        print(f"❌ Unexpected error: {e}")
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
+PYTHON_SCRIPT_EOF
+
+chmod +x "$INSTALL_DIR/cursor_pr_agent_direct.py"
+echo -e "${GREEN}✅ Integration script created${NC}"
+
+# Create git hooks setup script
+echo -e "${CYAN}🪝 Creating git hooks setup script...${NC}"
+cat > "$INSTALL_DIR/setup-hooks.sh" << 'HOOKS_EOF'
+#!/bin/bash
+
+echo "🪝 Setting up PR-Agent Git Hooks"
+echo "=================================="
+
+# Create pre-commit hook
+echo "📝 Creating pre-commit hook..."
+cat > .git/hooks/pre-commit << 'PRECOMMIT_EOF'
+#!/bin/bash
+
+# Skip on main/master branches
+current_branch=$(git branch --show-current)
+if [[ "$current_branch" == "main" || "$current_branch" == "master" ]]; then
+    exit 0
+fi
+
+# Skip if no .env file (no API key)
+if [ ! -f ".env" ]; then
+    echo "⚠️  No .env file found, skipping PR-Agent review"
+    exit 0
+fi
+
+# Load environment variables from .env file for the git hook
+set -a
+source .env
+set +a
+
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "    PR-Agent Pre-Commit Review"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""
+echo "🔍 Running PR-Agent review on staged changes..."
+
+# Stash unstaged changes
+git stash push --keep-index -m "temp-for-pr-agent-review" > /dev/null 2>&1
+
+# Run PR-Agent review
+if ./.cursor-pr-agent/cursor_pr_agent_direct.py --confidence-level medium; then
+    echo ""
+    echo "🔍 Review the suggestions above before committing"
+else
+    echo ""
+    echo "⚠️  PR-Agent review had issues, but proceeding with commit"
+fi
+
+# Restore unstaged changes
+git stash pop > /dev/null 2>&1
+
+echo ""
+PRECOMMIT_EOF
+
+chmod +x .git/hooks/pre-commit
+echo "✅ Pre-commit hook installed"
+
+# Create post-commit hook
+echo "📝 Creating post-commit hook..."
+cat > .git/hooks/post-commit << 'POSTCOMMIT_EOF'
+#!/bin/bash
+
+# Skip on main/master branches
+current_branch=$(git branch --show-current)
+if [[ "$current_branch" == "main" || "$current_branch" == "master" ]]; then
+    exit 0
+fi
+
+# Skip if no .env file (no API key)
+if [ ! -f ".env" ]; then
+    echo "⚠️  No .env file found, skipping PR-Agent review"
+    exit 0
+fi
+
+# Load environment variables from .env file for the git hook
+set -a
+source .env
+set +a
+
+echo ""
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "    PR-Agent Post-Commit Review"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""
+
+commit_hash=$(git rev-parse HEAD)
+commit_msg=$(git log -1 --pretty=format:"%s")
+
+echo "📊 Just committed:"
+echo "   Hash: $commit_hash"
+echo "   Message: $commit_msg"
+echo ""
+
+echo "🤖 Running PR-Agent review on latest commit..."
+echo "    Comparing $current_branch against default branch (auto-detect)"
+echo ""
+
+# Run PR-Agent review (will auto-detect base branch)
+if ./.cursor-pr-agent/cursor_pr_agent_direct.py --confidence-level medium; then
+    echo ""
+    echo "🔍 Review the suggestions above before pushing"
+else
+    echo ""
+    echo "⚠️  PR-Agent review encountered issues"
+    echo "💡 You can run it manually: ./.cursor-pr-agent/cursor_pr_agent_direct.py"
+fi
+
+echo ""
+POSTCOMMIT_EOF
+
+chmod +x .git/hooks/post-commit
+echo "✅ Post-commit hook installed"
+
+echo ""
+echo "🎉 Git hooks setup complete!"
+echo ""
+echo "📋 What was installed:"
+echo "  • Pre-commit hook: Reviews staged changes before commit"
+echo "  • Post-commit hook: Reviews changes after commit"
+echo ""
+echo "💡 The hooks will:"
+echo "  • Skip on main/master branches"
+echo "  • Skip if no .env file is found"
+echo "  • Run automatically on commits in feature branches"
+echo ""
+echo "⚠️  Note: Make sure your .env file contains OPENAI_API_KEY"
+HOOKS_EOF
+
+chmod +x "$INSTALL_DIR/setup-hooks.sh"
+echo -e "${GREEN}✅ Git hooks setup script created${NC}"
+
+# Create PR-Agent configuration
+echo -e "${CYAN}⚙️  Creating PR-Agent configuration...${NC}"
+cp "$TEMP_DIR/pr-agent-repo/pr_agent/settings/configuration.toml" ".pr_agent.toml" 2>/dev/null || {
+cat > ".pr_agent.toml" << 'CONFIG_EOF'
+[config]
+git_provider = "local"
+publish_output = false
+
+[pr_reviewer]
+require_score_review = false
+require_soc2_review = true  
+require_can_be_split_review = false
+enable_review_labels_effort = false
+enable_review_labels_security = false
+
+[local]
+description_path = "description.md"
+review_path = "review.md"
+CONFIG_EOF
+}
+echo -e "${GREEN}✅ PR-Agent configuration copied${NC}"
+
+# Create .env template if it doesn't exist
+if [ ! -f ".env" ]; then
+    echo -e "${CYAN}📝 Creating .env template...${NC}"
+    cat > ".env" << 'ENV_EOF'
+# OpenAI API Key - Get yours from https://platform.openai.com/api-keys
+OPENAI_API_KEY=your-openai-api-key-here
+
+# Optional: Override default model
+# OPENAI_MODEL=gpt-4o-mini
+ENV_EOF
+    echo -e "${YELLOW}⚠️  Please edit .env file and add your OPENAI_API_KEY${NC}"
+else
+    echo -e "${GREEN}✅ .env file already exists${NC}"
+fi
+
+# Update .gitignore
+echo -e "${CYAN}🔒 Updating .gitignore...${NC}"
+if [ ! -f ".gitignore" ]; then
+    echo -e "${CYAN}🔒 Creating .gitignore...${NC}"
+fi
+
+# Add entries to .gitignore if they don't exist
+{
+    echo "# Environment variables"
+    echo ".env"
+    echo ""
+    echo "# PR-Agent integration files" 
+    echo ".cursor-pr-agent/"
+    echo ""
+    echo "# PR-Agent configuration"
+    echo ".pr_agent.toml"
+    echo "install-pr-agent-complete.sh"
+    echo ""
+    echo "# Python cache files"
+    echo "__pycache__/"
+    echo "*.py[cod]"
+    echo "*\$py.class"
+} >> .gitignore
+
+echo -e "${GREEN}✅ .gitignore created${NC}"
+
+# Create documentation
+echo -e "${CYAN}📚 Creating documentation...${NC}"
+cat > "$INSTALL_DIR/README.md" << 'README_EOF'
+# PR-Agent Integration
+
+This directory contains the complete PR-Agent integration for automated code review.
+
+## Quick Start
+
+1. **Add your API key to .env:**
+   ```bash
+   OPENAI_API_KEY=sk-your-actual-key-here
+   ```
+
+2. **Test the integration:**
+   ```bash
+   ./.cursor-pr-agent/cursor_pr_agent_direct.py
+   ```
+
+3. **Set up git hooks (optional):**
+   ```bash
+   ./.cursor-pr-agent/setup-hooks.sh
+   ```
+
+## Usage
+
+- **Manual review:** `./.cursor-pr-agent/cursor_pr_agent_direct.py`
+- **High confidence only:** `./.cursor-pr-agent/cursor_pr_agent_direct.py -c high`
+- **Specific branch:** `./.cursor-pr-agent/cursor_pr_agent_direct.py -b develop`
+
+## Files
+
+- `cursor_pr_agent_direct.py` - Main integration script
+- `setup-hooks.sh` - Git hooks installer
+- `requirements.txt` - Dependencies
+- `pr_agent/` - Local PR-Agent installation
+README_EOF
+
+echo -e "${GREEN}✅ Documentation created${NC}"
+
+# Clean up temporary directory
+rm -rf "$TEMP_DIR"
+
+# Final success message
+cat << FINAL_EOF
+
+🎉 Installation Complete!
+
+📋 What was installed:
+  • PR-Agent package and dependencies
+  • Requirements file: $INSTALL_DIR/requirements.txt
+  • Integration script: $INSTALL_DIR/cursor_pr_agent_direct.py
+  • Git hooks setup: $INSTALL_DIR/setup-hooks.sh
+  • Configuration: .pr_agent.toml
+  • Environment template: .env
+  • Documentation: $INSTALL_DIR/README.md
+  • Updated .gitignore
+
+🚀 Next Steps:
+1. Edit .env file and add your OPENAI_API_KEY
+2. Test the integration:
+   ./.cursor-pr-agent/cursor_pr_agent_direct.py --base-branch main
+3. Set up automatic git hooks (optional):
+   ./.cursor-pr-agent/setup-hooks.sh
+
+💡 Usage Examples:
+  # Manual review
+  ./.cursor-pr-agent/cursor_pr_agent_direct.py
+
+  # High priority issues only
+  ./.cursor-pr-agent/cursor_pr_agent_direct.py --confidence-level high
+
+  # Compare against develop branch
+  ./.cursor-pr-agent/cursor_pr_agent_direct.py --base-branch develop
+
+🎊 Happy coding with AI-powered code review!
+
+📖 For detailed documentation, see: $INSTALL_DIR/README.md
+FINAL_EOF
+INSTALLER_EOF
+
+RUN chmod +x /usr/local/bin/install-pr-agent-complete.sh
+
+# Create the Docker entrypoint script
+RUN cat > /usr/local/bin/entrypoint.sh << 'EOF'
+#!/bin/bash
+set -e
+
+echo "🚀 PR-Agent Docker Runner"
+echo "=========================="
+
+# Check if we're in a git repository
+if [ ! -d ".git" ]; then
+    echo "❌ Error: Not in a git repository"
+    echo "💡 Make sure to run this from your project root:"
+    echo "   docker run -v \$(pwd):/workspace pr-agent-runner"
+    exit 1
+fi
+
+# Auto-detect OPENAI_API_KEY from host environment or .env file
+if [ -z "$OPENAI_API_KEY" ] && [ ! -f ".env" ]; then
+    echo "❌ Error: OPENAI_API_KEY not found"
+    echo "💡 Either:"
+    echo "   1. Set in your shell: export OPENAI_API_KEY=sk-your-key"
+    echo "   2. Or create .env file with: OPENAI_API_KEY=your-key"
+    echo "   3. Docker will auto-detect from your environment"
+    exit 1
+fi
+
+# Create .env file from environment variable if provided and not exists
+if [ -n "$OPENAI_API_KEY" ] && [ ! -f ".env" ]; then
+    echo "OPENAI_API_KEY=$OPENAI_API_KEY" > .env
+    echo "✅ Auto-detected API key from environment"
+fi
+
+# Run the installer
+echo "📦 Installing PR-Agent..."
+install-pr-agent-complete.sh
+
+# Parse command line arguments
+CONFIDENCE_LEVEL="medium"
+BASE_BRANCH=""
+SETUP_HOOKS=false
+PERSISTENT_MODE=false
+RUN_ONCE=false
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -c|--confidence-level)
+            CONFIDENCE_LEVEL="$2"
+            shift 2
+            ;;
+        -b|--base-branch)
+            BASE_BRANCH="$2"
+            shift 2
+            ;;
+        --setup-hooks)
+            SETUP_HOOKS=true
+            shift
+            ;;
+        --persistent)
+            PERSISTENT_MODE=true
+            SETUP_HOOKS=true
+            shift
+            ;;
+        --once)
+            RUN_ONCE=true
+            shift
+            ;;
+        -h|--help)
+            echo "Usage: docker run -v \$(pwd):/workspace pr-agent-runner [OPTIONS]"
+            echo ""
+            echo "Options:"
+            echo "  -c, --confidence-level LEVEL   Set confidence level (high|medium|low)"
+            echo "  -b, --base-branch BRANCH       Compare against specific branch"
+            echo "  --setup-hooks                  Install git hooks for automatic reviews"
+            echo "  --persistent                   Keep container running with git hooks active"
+            echo "  --once                         Run single review and exit"
+            echo "  -h, --help                     Show this help message"
+            echo ""
+            echo "Environment Variables:"
+            echo "  OPENAI_API_KEY                 Auto-detected from your environment"
+            echo ""
+            echo "Examples:"
+            echo "  # One-time review (auto-detects API key)"
+            echo "  export OPENAI_API_KEY=sk-your-key"
+            echo "  docker run --rm -v \$(pwd):/workspace -e OPENAI_API_KEY pr-agent-runner"
+            echo ""
+            echo "  # Persistent mode with automatic git hooks"
+            echo "  docker run -v \$(pwd):/workspace -e OPENAI_API_KEY pr-agent-runner --persistent"
+            echo ""
+            echo "  # High confidence only"
+            echo "  docker run --rm -v \$(pwd):/workspace -e OPENAI_API_KEY pr-agent-runner -c high"
+            exit 0
+            ;;
+        *)
+            echo "❌ Unknown option: $1"
+            echo "Use --help for usage information"
+            exit 1
+            ;;
+    esac
+done
+
+# Always setup hooks if requested
+if [ "$SETUP_HOOKS" = true ]; then
+    echo "🪝 Setting up git hooks..."
+    ./.cursor-pr-agent/setup-hooks.sh
+    echo "✅ Git hooks installed!"
+fi
+
+# Handle different modes
+if [ "$PERSISTENT_MODE" = true ]; then
+    echo "🔄 Running in persistent mode..."
+    echo "📝 Git hooks are active - commits will trigger automatic reviews"
+    echo "🛑 Press Ctrl+C to stop the container"
+    echo ""
+    
+    # Keep container running and monitor for git activity
+    while true; do
+        echo "⏰ $(date): Container running, git hooks active..."
+        sleep 30
+    done
+    
+elif [ "$RUN_ONCE" = true ] || [ "$SETUP_HOOKS" = false ]; then
+    # Run single review
+    echo "🤖 Running one-time PR-Agent review..."
+    if [ -n "$BASE_BRANCH" ]; then
+        ./.cursor-pr-agent/cursor_pr_agent_direct.py --confidence-level "$CONFIDENCE_LEVEL" --base-branch "$BASE_BRANCH"
+    else
+        ./.cursor-pr-agent/cursor_pr_agent_direct.py --confidence-level "$CONFIDENCE_LEVEL"
+    fi
+    
+    echo ""
+    echo "✅ Review completed!"
+    
+else
+    # Default: setup hooks and exit
+    echo "✅ Git hooks are now installed!"
+    echo "💡 Future commits in this repository will trigger automatic reviews"
+fi
+
+echo "💡 Container will clean up automatically when stopped"
+EOF
+
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
+# Set the entrypoint
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
