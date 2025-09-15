@@ -39,6 +39,15 @@ if [ ! -d ".cursor-pr-agent" ]; then
     echo -e "${YELLOW}💡 Run the installer first:${NC}"
     echo -e "   curl -O https://raw.githubusercontent.com/sid-rp/cursor-pr-agent/main/install-pr-agent-complete.sh"
     echo -e "   ./install-pr-agent-complete.sh"
+    echo -e "   ./.cursor-pr-agent/setup-hooks.sh"
+    exit 1
+fi
+
+# Check if git hooks are installed
+if [ ! -f ".git/hooks/post-commit" ]; then
+    echo -e "${RED}❌ Git hooks not installed${NC}"
+    echo -e "${YELLOW}💡 Enable git hooks first:${NC}"
+    echo -e "   ./.cursor-pr-agent/setup-hooks.sh"
     exit 1
 fi
 
@@ -52,20 +61,45 @@ fi
 
 # Configuration
 CONFIDENCE_LEVEL="${CONFIDENCE_LEVEL:-medium}"
-WATCH_EXTENSIONS="${WATCH_EXTENSIONS:-py,js,ts,tsx,jsx,go,rs,java,cpp,c,h,hpp,sh,yml,yaml,json}"
 
 echo -e "${GREEN}✅ Dependencies checked${NC}"
 echo -e "${BLUE}📁 Repository:${NC} $(basename "$(pwd)")"
 echo -e "${BLUE}⚙️  Confidence:${NC} ${CONFIDENCE_LEVEL}"
-echo -e "${BLUE}📝 Extensions:${NC} ${WATCH_EXTENSIONS}"
 echo ""
 
-# Create file pattern for entr
-PATTERN=$(echo "$WATCH_EXTENSIONS" | sed 's/,/\\|/g')
+# Get current branch
+current_branch=$(git branch --show-current 2>/dev/null || echo "unknown")
 
-echo -e "${YELLOW}👁️  Watching files... (Press Ctrl+C to stop)${NC}"
-echo -e "${YELLOW}💡 Save any source file to trigger review${NC}"
+# Skip if on main/master
+if [[ "$current_branch" == "main" || "$current_branch" == "master" ]]; then
+    echo -e "${YELLOW}⏭️  On main/master branch - file watcher not recommended${NC}"
+    echo -e "${YELLOW}💡 Switch to a feature branch first${NC}"
+    exit 1
+fi
+
+echo -e "${BLUE}🌿 Branch:${NC} ${current_branch}"
 echo ""
+
+# Function to handle git lock
+wait_for_git_lock() {
+    local max_attempts=10
+    local attempt=1
+    
+    while [ $attempt -le $max_attempts ]; do
+        if [ ! -f ".git/index.lock" ]; then
+            return 0
+        fi
+        
+        echo -e "${YELLOW}⏳ Waiting for git lock to clear (attempt $attempt/$max_attempts)...${NC}"
+        sleep 0.5
+        attempt=$((attempt + 1))
+    done
+    
+    # If we get here, remove the stale lock
+    echo -e "${YELLOW}🔧 Removing stale git lock file...${NC}"
+    rm -f ".git/index.lock" 2>/dev/null || true
+    return 0
+}
 
 # Function to run review
 run_review() {
@@ -74,55 +108,50 @@ run_review() {
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
     
-    # Get current branch
-    current_branch=$(git branch --show-current 2>/dev/null || echo "unknown")
+    # Wait for any existing git lock to clear
+    wait_for_git_lock
     
-    # Skip if on main/master
-    if [[ "$current_branch" == "main" || "$current_branch" == "master" ]]; then
-        echo -e "${YELLOW}⏭️  On main/master branch - skipping review${NC}"
-        return 0
-    fi
-    
-    # Check if there are any changes
-    if git diff --quiet && git diff --quiet --cached; then
+    # Check if there are any changes (including untracked files)
+    if git diff --quiet && git diff --quiet --cached && [ -z "$(git ls-files --others --exclude-standard)" ]; then
         echo -e "${YELLOW}ℹ️  No changes detected${NC}"
         return 0
     fi
     
-    echo -e "${BLUE}🌿 Branch:${NC} ${current_branch}"
     echo -e "${BLUE}📝 Creating temporary commit for review...${NC}"
     
     # Save current state
     local has_staged_changes=false
-    local has_unstaged_changes=false
-    
     if ! git diff --quiet --cached; then
         has_staged_changes=true
     fi
     
-    if ! git diff --quiet; then
-        has_unstaged_changes=true
-    fi
-    
-    # Create temporary commit for PR-Agent analysis
-    local temp_commit_created=false
     local original_head=$(git rev-parse HEAD)
     
-    # Stage all changes
-    git add -A
+    # Wait for git lock again before staging
+    wait_for_git_lock
     
-    # Create temporary commit
+    # Stage ALL changes including modifications to existing files
+    git add . 2>/dev/null || true
+    
+    # Remove unwanted files from staging
+    git reset HEAD .cursor-pr-agent/ 2>/dev/null || true
+    git reset HEAD pr-agent-setup/ 2>/dev/null || true
+    git reset HEAD install-pr-agent-complete.sh 2>/dev/null || true
+    git reset HEAD watch-on-save.sh 2>/dev/null || true
+    git reset HEAD .gitignore 2>/dev/null || true
+    
+    # Wait for git lock before committing
+    wait_for_git_lock
+    
     if git commit -m "[TEMP] Auto-review commit - will be reverted" --quiet; then
-        temp_commit_created=true
-        echo -e "${BLUE}🎯 Running PR-Agent review...${NC}"
+        echo -e "${BLUE}🎯 Git hooks triggered! (post-commit hook runs PR-Agent automatically)${NC}"
         echo ""
         
-        # Run the review on the temporary commit
-        if timeout 45s ./.cursor-pr-agent/cursor_pr_agent_direct.py --confidence-level "$CONFIDENCE_LEVEL"; then
-            echo -e "\n${GREEN}✅ Review completed${NC}"
-        else
-            echo -e "\n${YELLOW}⚠️  Review had issues (timeout or API error)${NC}"
-        fi
+        # Wait a moment for the hook to complete
+        sleep 2
+        
+        # Wait for git lock before reverting
+        wait_for_git_lock
         
         # Revert the temporary commit
         echo -e "${BLUE}🔄 Restoring original state...${NC}"
@@ -130,6 +159,7 @@ run_review() {
         
         # Restore original staging state
         if [[ "$has_staged_changes" == "false" ]]; then
+            wait_for_git_lock
             git reset HEAD . --quiet 2>/dev/null || true
         fi
         
@@ -142,10 +172,13 @@ run_review() {
     echo -e "${YELLOW}👁️  Watching for more changes...${NC}"
 }
 
-# Export the function so entr can use it
-export -f run_review
-export CONFIDENCE_LEVEL
-export RED GREEN YELLOW BLUE CYAN NC
+# Export function and variables for entr
+export -f run_review wait_for_git_lock
+export CONFIDENCE_LEVEL RED GREEN YELLOW BLUE CYAN NC
 
-# Watch files and trigger review on changes
-git ls-files | grep -E "\\.($PATTERN)$" | entr -c bash -c 'run_review'
+echo -e "${YELLOW}👁️  Watching files... (Press Ctrl+C to stop)${NC}"
+echo -e "${YELLOW}💡 Save any source file to trigger review${NC}"
+echo ""
+
+# Watch files using entr - proper pattern with git lock handling
+find . -maxdepth 3 -type f \( -name "*.py" -o -name "*.js" -o -name "*.ts" -o -name "*.tsx" -o -name "*.jsx" -o -name "*.go" -o -name "*.rs" -o -name "*.java" -o -name "*.cpp" -o -name "*.c" -o -name "*.h" -o -name "*.hpp" -o -name "*.yml" -o -name "*.yaml" -o -name "*.json" \) ! -path "./.cursor-pr-agent/*" ! -path "./pr-agent-setup/*" ! -path "./.git/*" ! -path "./node_modules/*" ! -path "./__pycache__/*" | entr -d -r bash -c 'run_review'

@@ -844,7 +844,7 @@ if [ -f "$REPO_ROOT/.gitignore" ]; then
     fi
     # Add PR-Agent config files if not already there
     if ! grep -q "\.pr_agent\.toml" "$REPO_ROOT/.gitignore"; then
-        echo -e "\n# PR-Agent configuration\n.pr_agent.toml\ninstall-pr-agent-complete.sh\n\n# Docker setup files (downloaded for setup)\nDockerfile.standalone\ndocker-run.sh" >> "$REPO_ROOT/.gitignore"
+        echo -e "\n# PR-Agent configuration\n.pr_agent.toml\ninstall-pr-agent-complete.sh\n\n# Docker setup files (downloaded for setup)\nDockerfile.standalone\ndocker-run.sh\n\n# Watch-on-save script (downloaded for setup)\nwatch-on-save.sh" >> "$REPO_ROOT/.gitignore"
         echo -e "${GREEN}✅ Added PR-Agent config files to .gitignore${NC}"
     fi
 else
@@ -863,6 +863,9 @@ install-pr-agent-complete.sh
 # Docker setup files (downloaded for setup)
 Dockerfile.standalone
 docker-run.sh
+
+# Watch-on-save script (downloaded for setup)
+watch-on-save.sh
 
 # Python cache files
 __pycache__/
