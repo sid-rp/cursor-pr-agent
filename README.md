@@ -90,40 +90,82 @@ print(f"Fails{fails}")
 print(f"trials{trials}")
 ```
 
-**PR-Agent Analysis Results**:
+**Terminal Output**:
+
+![Git Commit Hook](images/1.png)
+
+![Analysis Output](images/2.png)
+
+![Complete Analysis](images/3.png)
+
+**Key Findings**:
+- **Logic Bug**: Function treats `percet=30` as probability (always fails), should be `0.3`
+- **Naming Issues**: Misspelled identifiers (`percet_fail` → `percent_fail`) 
+- **Output Formatting**: Missing labels and failure rate calculation
+- **Confidence**: Medium level analysis
+- **Effort**: 1/5 (Low complexity)
+- **Security**: No concerns detected
+
+## 🧪 Try It Yourself - 5 Minute Demo
+
+**Step 1: Setup** (in any git repository)
+```bash
+# Download and run installer
+curl -O https://raw.githubusercontent.com/sid-rp/cursor-pr-agent/main/install-pr-agent-complete.sh
+chmod +x install-pr-agent-complete.sh
+./install-pr-agent-complete.sh
+
+# Add your API key
+echo "OPENAI_API_KEY=sk-your-key" > .env
+
+# Enable automatic git hooks  
+./.cursor-pr-agent/setup-hooks.sh
 ```
-review:
-  estimated_effort_to_review_[1-5]: |
-    1
-  relevant_tests: |
-    No
-  key_issues_to_review:
-    - relevant_file: |
-        simulation.py
-      issue_header: |
-        Logic Bug
-      issue_content: |
-        The function name and variables suggest percentage-based failure, but the code treats the input as a 0-1 probability while it is set to 30, making failures always true. Confirm intended units and adjust to use a fraction (e.g., 0.3) or divide by 100.
-      start_line: 3
-      end_line: 9
-    - relevant_file: |
-        simulation.py
-      issue_header: |
-        Naming/Spelling
-      issue_content: |
-        Multiple identifiers are misspelled (e.g., 'percet_fail', 'percet'). This harms readability and can cause misuse. Consider renaming to 'percent_fail' or 'fails_with_probability' and 'percent' or 'probability'.
-      start_line: 3
-      end_line: 8
-    - relevant_file: |
-        simulation.py
-      issue_header: |
-        Output Formatting
-      issue_content: |
-        Printed messages lack spacing/labels and omit useful metrics (e.g., failure rate). Consider printing clear labels and derived statistics to validate the simulation.
-      start_line: 9
-      end_line: 10
-  security_concerns: |
-    No
+
+**Step 2: Create buggy code**
+```bash
+# Create feature branch
+git checkout -b test/pr-agent-demo
+
+# Add intentionally flawed code
+cat > buggy_example.py << 'EOF'
+import random
+
+def fail_sometimes(percent):
+    return random.random() < percent  # Bug: treats 50 as 50,000%
+
+def divide_numbers(a, b):
+    return a / b  # Bug: no zero division check
+
+# Test with problematic values
+result = fail_sometimes(50)  # Always fails!
+answer = divide_numbers(10, 0)  # Crashes!
+print(f"Result: {result}, Answer: {answer}")
+EOF
+```
+
+**Step 3: Commit and watch the magic**
+```bash
+git add buggy_example.py
+git commit -m "Add simulation with intentional bugs"
+```
+
+**Step 4: Manual review** (optional)
+```bash
+# Run review manually anytime
+./.cursor-pr-agent/cursor_pr_agent_direct.py --confidence-level high
+```
+
+**Docker Version** (zero setup):
+```bash
+# Download Docker setup
+curl -O https://raw.githubusercontent.com/sid-rp/cursor-pr-agent/main/Dockerfile.standalone
+curl -O https://raw.githubusercontent.com/sid-rp/cursor-pr-agent/main/docker-run.sh
+chmod +x docker-run.sh
+
+# One command setup + review
+export OPENAI_API_KEY=sk-your-key
+./docker-run.sh --setup-hooks
 ```
 
 **Other Issues Found in Production**:
