@@ -103,10 +103,28 @@ wait_for_git_lock() {
 
 # Function to run review
 run_review() {
+    # Create a lock file to prevent multiple simultaneous reviews
+    local lock_file="/tmp/pr_agent_review_lock_$$"
+    if [ -f "$lock_file" ]; then
+        echo -e "${YELLOW}⏭️  Review already in progress, skipping...${NC}"
+        return 0
+    fi
+    
+    touch "$lock_file"
+    trap "rm -f '$lock_file'" EXIT
+    
     echo -e "\n${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "${CYAN}    File Changed - Running Review${NC}"
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
+    
+    current_branch=$(git branch --show-current 2>/dev/null || echo "unknown")
+    
+    if [[ "$current_branch" == "main" || "$current_branch" == "master" ]]; then
+        echo -e "${YELLOW}⏭️  On main/master branch - skipping review${NC}"
+        rm -f "$lock_file"
+        return 0
+    fi
     
     # Wait for any existing git lock to clear
     wait_for_git_lock
@@ -114,54 +132,41 @@ run_review() {
     # Check if there are any changes (including untracked files)
     if git diff --quiet && git diff --quiet --cached && [ -z "$(git ls-files --others --exclude-standard)" ]; then
         echo -e "${YELLOW}ℹ️  No changes detected${NC}"
+        rm -f "$lock_file"
         return 0
     fi
     
+    echo -e "${BLUE}🌿 Branch:${NC} ${current_branch}"
     echo -e "${BLUE}📝 Creating temporary commit for review...${NC}"
-    
-    # Save current state
-    local has_staged_changes=false
-    if ! git diff --quiet --cached; then
-        has_staged_changes=true
-    fi
     
     local original_head=$(git rev-parse HEAD)
     
-    # Wait for git lock again before staging
+    # Wait for git lock before staging
     wait_for_git_lock
     
-    # Stage ALL changes including modifications to existing files
-    git add . 2>/dev/null || true
-    
-    # Remove unwanted files from staging
-    git reset HEAD .cursor-pr-agent/ 2>/dev/null || true
-    git reset HEAD pr-agent-setup/ 2>/dev/null || true
-    git reset HEAD install-pr-agent-complete.sh 2>/dev/null || true
-    git reset HEAD watch-on-save.sh 2>/dev/null || true
-    git reset HEAD .gitignore 2>/dev/null || true
+    # Stage all changes
+    git add -A 2>/dev/null || true
     
     # Wait for git lock before committing
     wait_for_git_lock
     
-    if git commit -m "[TEMP] Auto-review commit - will be reverted" --quiet; then
-        echo -e "${BLUE}🎯 Git hooks triggered! (post-commit hook runs PR-Agent automatically)${NC}"
+    if git commit -m "[TEMP] Auto-review commit - will be reverted" --no-verify --quiet; then
+        echo -e "${BLUE}🎯 Running PR-Agent directly${NC}"
         echo ""
         
-        # Wait a moment for the hook to complete
-        sleep 2
+        # Run PR-Agent directly on the current commit
+        if ./.cursor-pr-agent/cursor_pr_agent_direct.py --confidence-level "$CONFIDENCE_LEVEL" --base-branch main; then
+            echo -e "\n${GREEN}✅ Review completed${NC}"
+        else
+            echo -e "\n${YELLOW}⚠️  Review had issues (timeout or API error)${NC}"
+        fi
         
         # Wait for git lock before reverting
         wait_for_git_lock
         
-        # Revert the temporary commit
+        # Revert the temporary commit completely to avoid triggering entr
         echo -e "${BLUE}🔄 Restoring original state...${NC}"
-        git reset --soft "$original_head"
-        
-        # Restore original staging state
-        if [[ "$has_staged_changes" == "false" ]]; then
-            wait_for_git_lock
-            git reset HEAD . --quiet 2>/dev/null || true
-        fi
+        git reset --hard "$original_head" --quiet
         
         echo -e "${GREEN}✅ State restored${NC}"
     else
@@ -170,6 +175,12 @@ run_review() {
     
     echo -e "\n${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "${YELLOW}👁️  Watching for more changes...${NC}"
+    
+    # Remove lock file before exiting
+    rm -f "$lock_file"
+    
+    # Longer delay to prevent rapid re-triggering
+    sleep 2
 }
 
 # Export function and variables for entr
