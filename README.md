@@ -4,22 +4,19 @@ Minimal setup to run AI-powered code review locally using PR-Agent with Cursor I
 
 ## 🚀 Quick Start
 
-### Option 1: Bash Script (Any OS)
 ```bash
-# Copy and run
-curl -O https://raw.githubusercontent.com/your-repo/install-pr-agent-complete.sh
-chmod +x install-pr-agent-complete.sh
+# Clone this repository
+git clone https://github.com/sid-rp/cursor-pr-agent.git
+cd cursor-pr-agent
+
+# Choose your setup method:
+
+# Option 1: Bash installer (any OS)
 ./install-pr-agent-complete.sh
 
-# Enable git hooks for automatic reviews
-./.cursor-pr-agent/setup-hooks.sh
-```
-
-### Option 2: Docker (Zero Setup)
-```bash
-# Copy 2 files: Dockerfile.standalone + docker-run.sh
+# Option 2: Docker (zero dependencies)
 export OPENAI_API_KEY=sk-your-key
-./docker-run.sh --setup-hooks  # This enables git hooks automatically
+./docker-run.sh --setup-hooks
 ```
 
 ## ⚙️ Setup
@@ -108,11 +105,11 @@ print(f"trials{trials}")
 
 ## 🧪 Try It Yourself - 5 Minute Demo
 
-**Step 1: Setup** (in any git repository)
+**Step 1: Setup**
 ```bash
-# Download and run installer
-curl -O https://raw.githubusercontent.com/sid-rp/cursor-pr-agent/main/install-pr-agent-complete.sh
-chmod +x install-pr-agent-complete.sh
+# Clone and setup
+git clone https://github.com/sid-rp/cursor-pr-agent.git
+cd cursor-pr-agent
 ./install-pr-agent-complete.sh
 
 # Add your API key
@@ -156,14 +153,22 @@ git commit -m "Add simulation with intentional bugs"
 ./.cursor-pr-agent/cursor_pr_agent_direct.py --confidence-level high
 ```
 
-**Docker Version** (zero setup):
+**Step 5: Real-time "on-save" reviews** (optional)
 ```bash
-# Download Docker setup
-curl -O https://raw.githubusercontent.com/sid-rp/cursor-pr-agent/main/Dockerfile.standalone
-curl -O https://raw.githubusercontent.com/sid-rp/cursor-pr-agent/main/docker-run.sh
-chmod +x docker-run.sh
+# Install file watcher (one-time setup)
+# macOS: brew install entr
+# Ubuntu: sudo apt install entr
 
-# One command setup + review
+# Start watching files - reviews trigger on save
+./.cursor-pr-agent/watch-on-save.sh
+
+# Or with high confidence only
+CONFIDENCE_LEVEL=high ./.cursor-pr-agent/watch-on-save.sh
+```
+
+**Docker Version** (zero dependencies):
+```bash
+# Use Docker setup from cloned repo
 export OPENAI_API_KEY=sk-your-key
 ./docker-run.sh --setup-hooks
 ```
