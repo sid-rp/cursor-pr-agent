@@ -92,21 +92,38 @@ print(f"trials{trials}")
 
 **PR-Agent Analysis Results**:
 ```
-🔍 Found 3 key issues:
-
-1. Logic Bug - Lines 3-9
-   The function treats percet=30 as probability, but 30 makes failures 
-   always true. Should be 0.3 or divide by 100.
-
-2. Naming/Spelling - Lines 3-8  
-   Multiple misspelled identifiers ('percet_fail', 'percet'). 
-   Consider 'percent_fail' and 'percent'.
-
-3. Output Formatting - Lines 9-10
-   Printed messages lack spacing/labels and omit failure rate calculation.
-
-Estimated review effort: 1/5 (Low complexity)
-Security concerns: None
+review:
+  estimated_effort_to_review_[1-5]: |
+    1
+  relevant_tests: |
+    No
+  key_issues_to_review:
+    - relevant_file: |
+        simulation.py
+      issue_header: |
+        Logic Bug
+      issue_content: |
+        The function name and variables suggest percentage-based failure, but the code treats the input as a 0-1 probability while it is set to 30, making failures always true. Confirm intended units and adjust to use a fraction (e.g., 0.3) or divide by 100.
+      start_line: 3
+      end_line: 9
+    - relevant_file: |
+        simulation.py
+      issue_header: |
+        Naming/Spelling
+      issue_content: |
+        Multiple identifiers are misspelled (e.g., 'percet_fail', 'percet'). This harms readability and can cause misuse. Consider renaming to 'percent_fail' or 'fails_with_probability' and 'percent' or 'probability'.
+      start_line: 3
+      end_line: 8
+    - relevant_file: |
+        simulation.py
+      issue_header: |
+        Output Formatting
+      issue_content: |
+        Printed messages lack spacing/labels and omit useful metrics (e.g., failure rate). Consider printing clear labels and derived statistics to validate the simulation.
+      start_line: 9
+      end_line: 10
+  security_concerns: |
+    No
 ```
 
 **Other Issues Found in Production**:
