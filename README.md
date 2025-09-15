@@ -74,16 +74,48 @@ chmod +x docker-run.sh
 - Check you're on a feature branch, not main/master
 - Binary files are automatically excluded
 
-## 🛡️ Security Analysis Examples
+## 🛡️ Real Analysis Example
 
-**Found Issues**:
+**Buggy Code Submitted** (intentionally flawed):
+```python
+import random
+
+def percet_fail(percet):
+    return random.random() < percet
+
+trials = 10000
+percet = 30
+fails = sum(percet_fail(percet) for _ in range(trials))
+print(f"Fails{fails}")
+print(f"trials{trials}")
+```
+
+**PR-Agent Analysis Results**:
+```
+🔍 Found 3 key issues:
+
+1. Logic Bug - Lines 3-9
+   The function treats percet=30 as probability, but 30 makes failures 
+   always true. Should be 0.3 or divide by 100.
+
+2. Naming/Spelling - Lines 3-8  
+   Multiple misspelled identifiers ('percet_fail', 'percet'). 
+   Consider 'percent_fail' and 'percent'.
+
+3. Output Formatting - Lines 9-10
+   Printed messages lack spacing/labels and omit failure rate calculation.
+
+Estimated review effort: 1/5 (Low complexity)
+Security concerns: None
+```
+
+**Other Issues Found in Production**:
 - Hardcoded API keys and secrets
 - SQL injection vulnerabilities  
 - Command injection risks
 - Sensitive data logging (PAN/CVV)
 - Weak cryptography (MD5 usage)
 - Missing authorization checks
-- Insecure HTTP endpoints
 
 ## 🔮 Future Ideas
 
